@@ -1,250 +1,213 @@
 #/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import ansible_utils as utils
 import errno
 import os
-import yaml
+import sys
 
-from collections import OrderedDict
-
-###################################################################################################
+###############################################################################
 def inventory(workdir, ip_list=[], user='nexgus', private_key='~/.ssh/id_rsa'):
+    stdout = sys.stdout
+
     with open(os.path.join(workdir, 'ansible.cfg'), 'w') as fp:
-        fp.write('[defaults]\n')
-        fp.write('inventory=./hosts\n')
-        fp.write('interpreter_python=auto\n') # Ensure run python3
-        fp.write('host_key_checking=False\n') # Append remote to known_hosts automatically
+        sys.stdout = fp
+        print('[defaults]')
+        print('inventory=./hosts')
+        print('interpreter_python=auto')
+        print('host_key_checking=False')
         # if the remote ask sudo password, there are two options you may use:
-        #   1. ansible-playbook deploy.yml --extra-vars "ansible_sudo_pass=0000"
-        #   2. ansible-playbook deploy.yml --ask-become-pass
+        # ansible-playbook deploy.yml --extra-vars "ansible_sudo_pass=0000"
+        # or
+        # ansible-playbook deploy.yml --ask-become-pass
         # Option 2 needs to enter password manually.
 
     with open(os.path.join(workdir, 'hosts'), 'w') as fp:
+        sys.stdout = fp
         for idx, ip in enumerate(ip_list):
-            fp.write(f'[server{idx+1}]\n')
-            fp.write(f'{ip} ansible_ssh_user={user} ansible_ssh_private_key_file={private_key}\n')
-            fp.write( '\n')
+            print(f'[server{idx+1}]')
+            print(f'{ip} '
+                  f'ansible_ssh_user={user} '
+                  f'ansible_ssh_private_key_file={private_key}')
 
-###################################################################################################
+    sys.stdout = stdout
+
+###############################################################################
 def playbook(filepath, 
              host_ip=[], 
              private_ip=[], 
              public_ip=[], 
              username='deployer',
-             kafka_volume='kafka', 
              zookeeper_volume='zookeeper', 
+             kafka_volume='kafka', 
+             kafka_retention_hours=168, 
+             kafka_retention_bytes=-1, 
              mount=None):
-
-    yml_all = OrderedDict()
-    yml_all['hosts'] = 'all'
-    yml_all['become'] = True
-    yml_all['tasks'] = []
-    yml_all['tasks'].append(utils.apt(
-        desc='Install aptitude using apt',
-        name='aptitude',
-        state='present',
-        update_cache='yes',
-        force_apt_get: 'yes',
-    ))
-    yml_all['tasks'].append(utils.apt(
-        desc='Install dependencies for Docker',
-        name=[
-            'apt-transport-https', 
-            'ca-certificates', 
-            'gnupg-agent', 
-            'software-properties-common', 
-            'python3-pip',
-        ],
-        state='present',
-    ))
-    yml_all['tasks'].append(utils.apt_key(
-        desc='Add official GPG key for Docker',
-        url='https://download.docker.com/linux/ubuntu/gpg',
-        state='present',
-    ))
-    yml_all['tasks'].append(utils.apt_repository(
-        desc='Add Docker repository',
-        url='deb https://download.docker.com/linux/ubuntu bionic stable',
-        state='present',
-    ))
-    yml_all['tasks'].append(utils.apt(
-        desc='Install Docker',
-        name=[
-            'docker-ce',
-            'docker-ce-cli',
-            'containerd.io',
-        ],
-        state='present',
-        update_cache='yes',
-    ))
-    yml_all['tasks'].append(utils.user(
-        desc='Add user to docker group',
-        name=f'{username}',
-        groups='docker',
-        append='yes',
-    ))
-    yml_all['tasks'].append(utils.get_url(
-        desc='Install Docker Compose',
-        url='https://github.com/docker/compose/releases/download/1.25.5/docker-compose-Linux-x86_64',
-        dest='/usr/local/bin/docker-compose',
-        mode='0755',
-    ))
-    yml_all['tasks'].append(utils.file(
-        desc='Create symbolic link for Docker Compose',
-        src='/usr/local/bin/docker-compose',
-        dest='/usr/bin/docker-compose',
-        state='link',
-    ))
-    yml_all['tasks'].append(utils.shell(
-        desc='Upgrade pip',
-        shell='python3 -m pip install -U pip',
-    ))
-    yml_all['tasks'].append(utils.pip(
-        desc='Install Python modules',
-        name=[
-            'docker',
-            'docker-compose',
-        ],
-        state='latest',
-    ))
-    yml_all['tasks'].append(utils.docker_image(
-        desc='Pull ZooKeeper Docker image',
-        name='nexgus/zookeeper:3.6.1'
-        source='pull',
-    ))
-    yml_all['tasks'].append(utils.docker_image(
-        desc='Pull Kafka Docker image',
-        name='nexgus/kafka:2.12-2.4.1',
-        source='pull',
-    ))
-
-    # If there is external data disk
-    if mount:
-        device, mount_point = mount.split(':')
-        yml_all['tasks'].append(utils.apt(
-            desc='Install partition tool',
-            name='parted',
-            state='present',
-        ))
-        yml_all['tasks'].append(utils.parted(
-            desc='Create partition for data disk',
-            device=f'{device}',
-            number='1',
-            state='present',
-        ))
-        yml_all['tasks'].append(utils.filesystem(
-            desc='Format data disk',
-            device=f'{device}1',
-            force='yes',
-            fstype='ext4',
-        ))
-        yml_all['tasks'].append(utils.file(
-            desc='Create a mount point for data disk',
-            path=f'{mount_point}',
-            state='directory',
-        ))
-        yml_all['tasks'].append(utils.mount(
-            desc='Mount data disk',
-            path=f'{mount_point}',
-            src=f'{device}1',
-            fstype='ext4',
-            state='mounted',
-        ))
-        yml_all['tasks'].append(utils.file(
-            desc='Create data directory for ZooKeeper',
-            path=f'{mount_point}/zookeeper',
-            state='directory',
-        ))
-        yml_all['tasks'].append(utils.file(
-            desc='Create data directory for Kafka',
-            path=f'{mount_point}/kafka',
-            state='directory',
-        ))
-
-    yml = [yml_all]
-    for idx, host in enumerate(host_ip):
-        # ZooKeeper Docker Compose file content
-        env = utils.ordered_dict(
-            'ZK_ID', 'ZK_dataDir',
-            ZK_ID=f'{idx+1}',
-            ZK_dataDir='/var/lib/zookeeper',
-        )
-        for server, ip in enumerate(private_ip):
-            env[f'ZK_server_{server+1}'] = f'{ip}:2888:3888'
-        zookeeper = utils.ordered_dict(
-            'image', 'ports', 'volumes', 'environment', 'restart',
-            image='nexgus/zookeeper:3.6.1',
-            ports=['2181:2181', '2888:2888', '3888:3888'], 
-            volumes=[f'{zookeeper_volume}:/var/lib/zookeeper'], 
-            environment=env, 
-            restart='unless-stopped', 
-        )
-
-        # Kafka Docker Compose file content
-        env = ordered_dict(
-            'KK_BROKER_ID', 'KK_LOG_DIR', 'KK_LISTENERS', 
-            'KK_ADVERTISED_LISTENERS', 'KK_LISTENER_SECURITY_PROTOCOL_MAP',
-            'KK_INTER_BROKER_LISTENER_NAME', 'KK_ZOOKEEPER_CONNECT', 
-            'KK_LOG_ROLL_HOURS', 'KK_ZOOKEEPER_CONNECTION_TIMEOUT_MS',
-            KK_BROKER_ID=f'{idx}',
-            KK_LOG_DIR='/var/lib/kafka',
-            KK_LISTENERS='INTRANET://0.0.0.0:9094,INTERNET://0.0.0.0:9092',
-            KK_ADVERTISED_LISTENERS=f'INTRANET://{private_ip[idx]}:9094,'
-                                    f'INTERNET://{public_ip[idx]}:9092',
-            KK_LISTENER_SECURITY_PROTOCOL_MAP='INTRANET:PLAINTEXT,'
-                                              'INTERNET:PLAINTEXT',
-            KK_INTER_BROKER_LISTENER_NAME='INTRANET',
-            KK_ZOOKEEPER_CONNECT=','.join([
-                f'{ip}:2181' for ip in private_ip]),
-            KK_LOG_ROLL_HOURS='168', # 7 days
-            KK_ZOOKEEPER_CONNECTION_TIMEOUT_MS=60*60*1000, # an hour
-        )
-        kafka = ordered_dict(
-            'image', 'ports', 'volumes', 'environment', 'restart',
-            image='nexgus/kafka:2.12-2.4.1', 
-            ports=['9092:9092', '9094:9094'], 
-            environment=env, 
-            restart='unless-stopped', 
-        )
-
-        docker_compose = ordered_dict(
-            'name', 'docker_compose', 
-            name='Run ZooKeeper and Kafka', 
-            docker_compose=ordered_dict(
-                'project_name', 'definition',
-                project_name='nexcom',
-                definition=ordered_dict(
-                    'version', 'services', 
-                    version='2',
-                    services=ordered_dict(
-                        'zookeeper', 'kafka',
-                        zookeeper=zookeeper,
-                        kafka=kafka,
-                    ),
-                ),
-            ),
-        )
---------------------
-        # Named volume definition(s)
-        if not zookeeper_volume.startswith('/'):
-            yml_server['tasks'][0]['docker_compose']['definition']['volumes'] = {
-                f'{zookeeper_volume}': {
-                    'driver': 'local'
-                }
-        }
-        if not kafka_volume.startswith('/'):
-            yml_server['tasks'][0]['docker_compose']['definition']['volumes'] = {
-                f'{kafka_volume}': {
-                    'driver': 'local'
-                }
-        }
-
-        yml.append(yml_server)
+    stdout = sys.stdout
 
     with open(filepath, 'w') as fp:
-        fp.write(yaml.dump(yml))
+        sys.stdout = fp
 
-###################################################################################################
+        print( '---')
+        print( '- hosts: all')
+        print( '  become: true')
+        print( '  tasks:')
+        print( '  - name: Install aptitude using apt')
+        print( '    apt:')
+        print( '      name: aptitude')
+        print( '      state: latest')
+        print( '      update_cache: yes')
+        print( '      force_apt_get: yes')
+        print( '  - name: Install dependencies for Docker')
+        print( '    apt:')
+        print( '      name:')
+        print( '      - apt-transport-https')
+        print( '      - ca-certificates')
+        print( '      - gnupg-agent')
+        print( '      - software-properties-common')
+        print( '      - python3-pip')
+        print( '      update_cache: yes')
+        print( '      state: present')
+        print( '  - name: Add official GPG key of Docker')
+        print( '    apt_key:')
+        print( '      url: https://download.docker.com/linux/ubuntu/gpg')
+        print( '      state: present')
+        print( '  - name: Add Docker repository')
+        print( '    apt_repository:')
+        print( '      repo: deb https://download.docker.com/linux/ubuntu bionic stable')
+        print( '      state: present')
+        print( '  - name: Install Docker')
+        print( '    apt:')
+        print( '      name:')
+        print( '      - docker-ce')
+        print( '      - docker-ce-cli')
+        print( '      - containerd.io')
+        print( '      update_cache: yes')
+        print( '      state: present')
+        print( '  - name: Add user to docker group')
+        print( '    user:')
+        print(f'      name: {username}')
+        print( '      groups: docker')
+        print( '      append: yes')
+        print( '  - name: Install Docker Compose')
+        print( '    get_url:')
+        print( '      url: https://github.com/docker/compose/releases/download/1.25.5/docker-compose-Linux-x86_64')
+        print( '      dest: /usr/local/bin/docker-compose')
+        print( '      mode: "0755"')
+        print( '  - name: Create symbolic link for Docker Compose')
+        print( '    file:')
+        print( '      src: /usr/local/bin/docker-compose')
+        print( '      dest: /usr/bin/docker-compose')
+        print( '      state: link')
+        print( '  - name: Upgrade PIP')
+        print( '    shell: python3 -m pip install -U pip')
+        print( '  - name: Install Python modules')
+        print( '    pip:')
+        print( '      name:')
+        print( '      - docker')
+        print( '      - docker-compose')
+        print( '      state: latest')
+        print( '  - name: Pull ZooKeeper Docker image')
+        print( '    docker_image:')
+        print( '      name: nexgus/zookeeper:3.6.1')
+        print( '      source: pull')
+        print( '  - name: Pull Kafka Docker image')
+        print( '    docker_image:')
+        print( '      name: nexgus/kafka:2.12-2.4.1')
+        print( '      source: pull')
+
+        if args.mount:
+            device, mount_point = mount.split(':')
+            print( '  - name: Install partition tool')
+            print( '    apt:')
+            print( '      name: parted')
+            print( '      state: present')
+            print( '  - name: Create partition for data disk')
+            print( '    parted:')
+            print(f'      device: {device}')
+            print( '      number: "1"')
+            print( '      state: present')
+            print( '  - name: Format data disk')
+            print( '    filesystem:')
+            print(f'      device: {device}1')
+            print( '      force: yes')
+            print( '      fstype: ext4')
+            print( '  - name: Create a mount point for data disk')
+            print( '    file:')
+            print(f'      path: {mount_point}')
+            print( '      state: directory')
+            print( '  - name: Mount data disk')
+            print( '    mount:')
+            print(f'      path: {mount_point}')
+            print(f'      src: {device}1')
+            print( '      fstype: ext4')
+            print( '      state: mounted')
+            print( '  - name: Create data directory for ZooKeeper')
+            print( '    file:')
+            print(f'      path: {mount_point}/zookeeper')
+            print( '      state: directory')
+            print( '  - name: Create data directory for Kafka')
+            print( '    file:')
+            print(f'      path: {mount_point}/kafka')
+            print( '      state: directory')
+
+        # For each server
+        for idx, host in enumerate(host_ip):
+            print()
+            print(f'- hosts: server{idx+1}')
+            print( '  become: true')
+            print( '  tasks:')
+            print( '  - name: Run ZooKeeper and Kafka')
+            print( '    docker_compose:')
+            print( '      project_name: nexcom')
+            print( '      definition:')
+            print( '        version: "2"')
+            # Named volumes
+            if (not zookeeper_volume.startswith('/')) or (not kafka_volume.startswith('/')):
+                print( '        volumes:')
+                if not zookeeper_volume.startswith('/'):
+                    print(f'          {zookeeper_volume}:')
+                    print( '            driver: local')
+                if not kafka_volume.startswith('/'):
+                    print(f'          {kafka_volume}:')
+                    print( '            driver: local')
+            # Services
+            print( '        services:')
+            print( '          zookeeper:')
+            print( '            image: nexgus/zookeeper:3.6.1')
+            print( '            ports:')
+            print( '            - 2181:2181')
+            print( '            - 2888:2888')
+            print( '            - 3888:3888')
+            print( '            volumes:')
+            print(f'            - {zookeeper_volume}:/var/lib/zookeeper')
+            print( '            environment:')
+            print(f'              ZK_ID: "{idx+1}"')
+            print( '              ZK_dataDir: /var/lib/zookeeper')
+            for server, ip in enumerate(private_ip):
+                print(f'              ZK_server_{server+1}: {ip}:2888:3888')
+            print( '            restart: unless-stopped')
+            print( '          kafka:')
+            print( '            image: nexgus/kafka:2.12-2.4.1')
+            print( '            ports:')
+            print( '            - 9092:9092')
+            print( '            - 9094:9094')
+            print( '            volumes:')
+            print(f'            - {kafka_volume}:/var/lib/kafka')
+            print( '            environment:')
+            print(f'              KK_BROKER_ID: "{idx}"')
+            print( '              KK_LOG_DIR: /var/lib/kafka')
+            print(f'              KK_LOG_RETENTION_HOURS: {kafka_retention_hours}')
+            print(f'              KK_LOG_RETENTION_BYTES: {kafka_retention_bytes}')
+            print( '              KK_LISTENERS: INTRANET://0.0.0.0:9094,INTERNET://0.0.0.0:9092')
+            print(f'              KK_ADVERTISED_LISTENERS: INTRANET://{private_ip[idx]}:9094,INTERNET://{public_ip[idx]}:9092')
+            print( '              KK_LISTENER_SECURITY_PROTOCOL_MAP: INTRANET:PLAINTEXT,INTERNET:PLAINTEXT')
+            print( '              KK_INTER_BROKER_LISTENER_NAME: INTRANET')
+            print( '              KK_ZOOKEEPER_CONNECT: ', end='')
+            print( ','.join([f'{ip}:2181/{args.kafka_chroot}' for ip in private_ip]))
+            print( '            restart: unless-stopped')
+
+    sys.stdout = stdout
+
+###############################################################################
 def main(args):
     host_ip = args.public_ip
     os.makedirs(args.workdir, exist_ok=True)
@@ -267,7 +230,7 @@ def main(args):
         mount=args.mount,
     )
 
-###################################################################################################
+###############################################################################
 if __name__ == '__main__':
     import argparse
 
@@ -284,7 +247,7 @@ if __name__ == '__main__':
                         help='Kafka advised IPs/hostnames.')
     parser.add_argument('-w', '--workdir',
                         type=str,
-                        default='./playbook',
+                        default='./playbooks',
                         help='Generated playbook directory.')
     parser.add_argument('-u', '--user',
                         type=str,
@@ -302,11 +265,28 @@ if __name__ == '__main__':
                         type=str,
                         default='kafka',
                         help='Kafka volume or path to host machine.')
+    parser.add_argument('-krh', '--kafka-retention-hours', 
+                        type=int,
+                        default=168, 
+                        help='The number of hours to keep a log file before '
+                             'deleting it (in hours) for Kafka cluster.')
+    parser.add_argument('-krb', '--kafka-retention-bytes', 
+                        type=int,
+                        default=-1, 
+                        help='The maximum size (in bytes) of the log before '
+                             'deleting it for Kafka cluster.')
+    parser.add_argument('-kch', '--kafka-chroot', 
+                        type=str,
+                        default='kafka',
+                        help='A Kafka server can also have a ZooKeeper chroot '
+                             'path as part of its ZooKeeper connection string '
+                             'which puts its data under some path in the '
+                             'ZooKeeper names.')
     parser.add_argument('-m', '--mount',
                         type=str,
-                        help='Data disk mount info in format "<device>:<mount point>".'
-                             'If --mount is set, --zookeeper-volume and --kafka-volume '
-                             'will be set automatically.')
+                        help='Data disk mount info in format "<device>:<mount '
+                             'point>". If --mount is set, --zookeeper-volume '
+                             'and --kafka-volume will be set automatically.')
     args = parser.parse_args()
 
     args.key = os.path.expanduser(args.key)
@@ -337,11 +317,7 @@ if __name__ == '__main__':
         args.zookeeper_volume = os.path.join(mount_point, 'zookeeper')
         args.kafka_volume = os.path.join(mount_point, 'kafka')
 
-    main(args)
+    if args.kafka_chroot.startswith('/')::
+        args.kafka_chroot = args.kafka_chroot[1:]
 
-# https://docs.microsoft.com/en-us/samples/azure-samples/virtual-machines-python-manage/azure-virtual-machines-management-samples---python/
-# https://docs.microsoft.com/en-us/azure/active-directory/develop/howto-create-service-principal-portal#get-application-id-and-authentication-key
-# Display name: DeployKafkaVM
-# Application (client) ID: 1051f293-c5a6-4813-8f7d-e7d7f2f04749
-# Directory (tenant) ID:   150ede72-6bf3-4029-ac57-de982587a01e
-# Object ID:               0e4d7156-d8fb-462e-a703-b17b0f6ecb6b
+    main(args)
