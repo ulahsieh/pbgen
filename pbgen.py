@@ -36,7 +36,11 @@ def playbook(filepath,
              private_ip=[], 
              public_ip=[], 
              username='deployer',
+             zookeeper_cpus = 4,
+             zookeeper_mem = 8,
              zookeeper_volume='zookeeper', 
+             kafka_cpus = 4,
+             kafka_mem = 8,
              kafka_volume='kafka', 
              kafka_retention_hours=168, 
              kafka_retention_bytes=-1, 
@@ -159,7 +163,7 @@ def playbook(filepath,
             print( '    docker_compose:')
             print( '      project_name: nexcom')
             print( '      definition:')
-            print( '        version: "2"')
+            print( '        version: "2.2"')
             # Named volumes
             if (not zookeeper_volume.startswith('/')) or (not kafka_volume.startswith('/')):
                 print( '        volumes:')
@@ -173,6 +177,8 @@ def playbook(filepath,
             print( '        services:')
             print( '          zookeeper:')
             print( '            image: nexgus/zookeeper:3.6.1')
+            print(f'            cpus: {zookeeper_cpus}')
+            print(f'            mem_limit: {zookeeper_mem}')
             print( '            ports:')
             print( '            - 2181:2181')
             print( '            - 2888:2888')
@@ -187,6 +193,8 @@ def playbook(filepath,
             print( '            restart: unless-stopped')
             print( '          kafka:')
             print( '            image: nexgus/kafka:2.12-2.4.1')
+            print(f'            cpus: {kafka_cpus}')
+            print(f'            mem_limit: {kafka_mem}')
             print( '            ports:')
             print( '            - 9092:9092')
             print( '            - 9094:9094')
@@ -265,6 +273,22 @@ if __name__ == '__main__':
                         type=str,
                         default='kafka',
                         help='Kafka volume or path to host machine.')
+    parser.add_argument('-zc', '--zookeeper-cpus',
+                        type=int,
+                        default=4,
+                        help='limit cpu for zookeeper container.')
+    parser.add_argument('-zm', '--zookeeper-mem',
+                        type=int,
+                        default=8,
+                        help='limit memory for zookeeper container.')
+    parser.add_argument('-kc', '--kafka-cpus',
+                        type=int,
+                        default=4,
+                        help='limit cpu for kafka container.')
+    parser.add_argument('-km', '--kafka-mem',
+                        type=int,
+                        default=8,
+                        help='limit memory for kafka container.')
     parser.add_argument('-krh', '--kafka-retention-hours', 
                         type=int,
                         default=168, 
